@@ -1,8 +1,29 @@
-import { chromium } from "playwright";
+import { chromium } from "playwright-core";
+import chromiumBinary from "@sparticuz/chromium";
 import { CarDetails } from "@/lib/types";
 import { properties } from "@/lib/properties";
 
 export const maxDuration = 60;
+
+async function launchBrowser() {
+  const isDev = process.env.NODE_ENV === "development";
+
+  if (isDev) {
+    // In dev, use locally installed Playwright browsers
+    return chromium.launch({
+      headless: true,
+      args: ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+    });
+  }
+
+  // In production (Vercel/serverless), use @sparticuz/chromium
+  const executablePath = await chromiumBinary.executablePath();
+  return chromium.launch({
+    executablePath,
+    headless: true,
+    args: chromiumBinary.args,
+  });
+}
 
 export async function POST(request: Request) {
   let browser;
@@ -29,13 +50,7 @@ export async function POST(request: Request) {
       );
     }
 
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        "--disable-blink-features=AutomationControlled",
-        "--no-sandbox",
-      ],
-    });
+    browser = await launchBrowser();
     const context = await browser.newContext({
       userAgent:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -93,7 +108,6 @@ export async function POST(request: Request) {
     await nextBtn.click();
     await page.waitForTimeout(1000);
 
-    // Wait for the Next button to become "Please Wait" then disappear, indicating submission
     try {
       await aptField.waitFor({ state: "hidden", timeout: 20000 });
     } catch {
