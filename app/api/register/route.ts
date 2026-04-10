@@ -29,28 +29,52 @@ export async function POST(request: Request) {
       );
     }
 
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+      ],
+    });
     const context = await browser.newContext({
       userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      viewport: { width: 1280, height: 800 },
+      locale: "en-US",
     });
     const page = await context.newPage();
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => false });
+    });
     page.setDefaultTimeout(15000);
 
     const url = `https://www.register2park.com/register?key=${property.urlKey}`;
     await page.goto(url, { waitUntil: "networkidle" });
 
-    // Dismiss the "Review Guest Parking Rules" overlay if present
-    const continueBtn = page.getByRole("button", { name: "Continue" });
-    if (await continueBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await continueBtn.click();
-      await page.waitForTimeout(500);
+    // Dismiss the "Review Guest Parking Rules" overlay by clicking Continue
+    async function dismissRulesOverlay() {
+      try {
+        const btn = page.getByRole("button", { name: "Continue" });
+        await btn.waitFor({ state: "visible", timeout: 5000 });
+        await btn.scrollIntoViewIfNeeded();
+        await btn.click();
+        await page.waitForTimeout(1500);
+        return true;
+      } catch {
+        return false;
+      }
     }
+
+    await dismissRulesOverlay();
 
     // Click "Visitor Parking"
     const visitorBtn = page.getByRole("button", { name: "Visitor Parking" });
     await visitorBtn.waitFor({ state: "visible", timeout: 10000 });
     await visitorBtn.click();
+    await page.waitForTimeout(2000);
+
+    // Some properties show rules after clicking Visitor Parking
+    await dismissRulesOverlay();
 
     // Wait for the form fields to appear
     const aptField = page.getByRole("textbox", { name: "Apartment Number:" });
@@ -65,12 +89,25 @@ export async function POST(request: Request) {
 
     // Submit the form
     const nextBtn = page.getByRole("button", { name: "Next" });
+    await nextBtn.scrollIntoViewIfNeeded();
     await nextBtn.click();
+    await page.waitForTimeout(1000);
 
-    // Wait for the approval result
-    const approvalHeading = page.getByRole("heading", { name: /Approved/i });
-    await approvalHeading.waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+    // Wait for the Next button to become "Please Wait" then disappear, indicating submission
+    try {
+      await aptField.waitFor({ state: "hidden", timeout: 20000 });
+    } catch {
+      await browser.close();
+      browser = undefined;
+      return Response.json({
+        success: false,
+        message: `Form submission timed out at ${property.name}. The site may be experiencing issues.`,
+        property: property.name,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
+    await page.waitForTimeout(2000);
     const pageContent = await page.textContent("body");
     const isApproved = pageContent?.includes("Approved") || pageContent?.includes("approved");
 
@@ -89,7 +126,7 @@ export async function POST(request: Request) {
       browser = undefined;
       return Response.json({
         success: false,
-        message: `Registration may have failed at ${property.name}. Check the site manually.`,
+        message: `Registration was not approved at ${property.name}. Check the site manually.`,
         property: property.name,
         timestamp: new Date().toISOString(),
       });
@@ -105,6 +142,9 @@ export async function POST(request: Request) {
         const emailField = page.getByRole("textbox", { name: "Email Address" });
         await emailField.waitFor({ state: "visible", timeout: 5000 });
         await emailField.fill(carDetails.email);
+
+        // Accept the native alert ("Email confirmation has been sent.") that fires after Send
+        page.once("dialog", (dialog) => dialog.accept());
 
         const sendBtn = page.getByRole("button", { name: "Send" });
         await sendBtn.click();
